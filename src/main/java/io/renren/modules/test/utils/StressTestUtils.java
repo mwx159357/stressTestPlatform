@@ -9,12 +9,14 @@ import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.IOUtils;
 import org.apache.jmeter.util.JMeterUtils;
 import org.apache.jmeter.visualizers.SamplingStatCalculator;
-import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
@@ -26,16 +28,14 @@ import static io.renren.common.utils.ConfigConstant.OS_NAME_LC;
  * 性能测试的工具类，同时用于读取配置文件。
  * 也可以将性能测试参数配置到系统参数配置中去。
  */
-@ConfigurationProperties(prefix = "test.stress")
+//@ConfigurationProperties(prefix = "test.stress")
 @Component
 public class StressTestUtils {
 
-    private static SysConfigService sysConfigService;
+    Logger logger = LoggerFactory.getLogger(getClass());
 
-    static {
-        StressTestUtils.sysConfigService = (SysConfigService) SpringContextUtils.getBean("sysConfigService");
-    }
-
+    private static SysConfigService sysConfigService = (SysConfigService) SpringContextUtils.getBean("sysConfigService");
+    public static String xslFilePath = "classpath:config/jmeter.results.zyanycall.xsl";
 
     //0：初始状态  1：正在运行  2：成功执行  3：运行出现异常
     public static final Integer INITIAL = 0;
@@ -58,14 +58,11 @@ public class StressTestUtils {
     public static final Integer NO_NEED_WEB_CHART = 1;
 
     /**
-     * 是否需要记录前端日志的状态标识
+     * 是否开启调试的状态标识
      */
-    //0：不需要前端显示日志  1：前端仅显示错误日志
-    //2：前端仅显示正确日志   3：前端正确错误日志都显示
-    public static final Integer NO_NEED_WEB_LOG = 0;
-    public static final Integer JUST_WEB_ERROR_LOG = 1;
-    public static final Integer JUST_WEB_RIGHT_LOG = 2;
-    public static final Integer ALL_WEB_LOG = 3;
+    //0：默认关闭调试  1：开启调试
+    public static final Integer NO_NEED_DEBUG = 0;
+    public static final Integer NEED_DEBUG = 1;
 
     //0：禁用  1：启用
     public static final Integer DISABLE = 0;
@@ -89,13 +86,13 @@ public class StressTestUtils {
      */
     public static Map<String, String> jMeterStatuses = new HashMap<>();
 
-    private static String jmeterHome;
+//    private static String jmeterHome;
 
-    private String casePath;
+//    private String casePath;
 
-    private boolean useJmeterScript;
+//    private boolean useJmeterScript;
 
-    private boolean replaceFile = true;
+//    private boolean replaceFile = true;
 
     /**
      * Jmeter在Master节点的绝对路径
@@ -125,39 +122,19 @@ public class StressTestUtils {
     public final static String MASTER_JMETER_REPLACE_FILE_KEY = "MASTER_JMETER_REPLACE_FILE_KEY";
 
     public static String getJmeterHome() {
-        String value = sysConfigService.getValue(MASTER_JMETER_HOME_KEY);
-        return value == null ? jmeterHome : value;
-    }
-
-    public void setJmeterHome(String jmeterHome) {
-        this.jmeterHome = jmeterHome;
+        return sysConfigService.getValue(MASTER_JMETER_HOME_KEY);
     }
 
     public String getCasePath() {
-        String value = sysConfigService.getValue(MASTER_JMETER_CASES_HOME_KEY);
-        return value == null ? casePath : value;
-    }
-
-    public void setCasePath(String casePath) {
-        this.casePath = casePath;
+        return sysConfigService.getValue(MASTER_JMETER_CASES_HOME_KEY);
     }
 
     public boolean isUseJmeterScript() {
-        String value = sysConfigService.getValue(MASTER_JMETER_USE_SCRIPT_KEY);
-        return value == null ? useJmeterScript : Boolean.valueOf(value);
-    }
-
-    public void setUseJmeterScript(boolean useJmeterScript) {
-        this.useJmeterScript = useJmeterScript;
+        return Boolean.valueOf(sysConfigService.getValue(MASTER_JMETER_USE_SCRIPT_KEY));
     }
 
     public boolean isReplaceFile() {
-        String value = sysConfigService.getValue(MASTER_JMETER_REPLACE_FILE_KEY);
-        return value == null ? replaceFile : Boolean.valueOf(value);
-    }
-
-    public void setReplaceFile(boolean replaceFile) {
-        this.replaceFile = replaceFile;
+        return Boolean.valueOf(sysConfigService.getValue(MASTER_JMETER_REPLACE_FILE_KEY));
     }
 
     public static String getSuffix4() {
@@ -251,7 +228,7 @@ public class StressTestUtils {
     /**
      * 判断当前是否存在正在执行的脚本
      */
-    public static boolean checkExistRunningScript(){
+    public static boolean checkExistRunningScript() {
         for (JmeterRunEntity jmeterRunEntity : jMeterEntity4file.values()) {
             if (jmeterRunEntity.getRunStatus().equals(RUNNING)) {
                 return true;
@@ -298,5 +275,54 @@ public class StressTestUtils {
         }
 
         jmeterProps.put("jmeter.version", JMeterUtils.getJMeterVersion());
+    }
+
+    /**
+     * 为调试模式动态设置Jmeter的结果文件格式，让jtl包含必要的调试信息。
+     * 这些信息会显著影响压力机性能，所以仅供调试使用。
+     * 同时这些配置仅对当前进程即master节点生效。
+     */
+    public void setJmeterOutputFormat() {
+        Properties jmeterProps = JMeterUtils.getJMeterProperties();
+        jmeterProps.put("jmeter.save.saveservice.label", "true");
+        jmeterProps.put("jmeter.save.saveservice.response_data", "true");
+        jmeterProps.put("jmeter.save.saveservice.response_data.on_error", "true");
+        jmeterProps.put("jmeter.save.saveservice.response_message", "true");
+        jmeterProps.put("jmeter.save.saveservice.successful", "true");
+        jmeterProps.put("jmeter.save.saveservice.thread_name", "true");
+        jmeterProps.put("jmeter.save.saveservice.time", "true");
+        jmeterProps.put("jmeter.save.saveservice.subresults", "true");
+        jmeterProps.put("jmeter.save.saveservice.assertions", "true");
+        jmeterProps.put("jmeter.save.saveservice.latency", "true");
+        jmeterProps.put("jmeter.save.saveservice.connect_time", "true");
+        jmeterProps.put("jmeter.save.saveservice.samplerData", "true");
+        jmeterProps.put("jmeter.save.saveservice.responseHeaders", "true");
+        jmeterProps.put("jmeter.save.saveservice.requestHeaders", "true");
+        jmeterProps.put("jmeter.save.saveservice.encoding", "true");
+        jmeterProps.put("jmeter.save.saveservice.bytes", "true");
+        jmeterProps.put("jmeter.save.saveservice.url", "true");
+        jmeterProps.put("jmeter.save.saveservice.filename", "true");
+        jmeterProps.put("jmeter.save.saveservice.hostname", "true");
+        jmeterProps.put("jmeter.save.saveservice.thread_counts", "true");
+        jmeterProps.put("jmeter.save.saveservice.sample_count", "true");
+        jmeterProps.put("jmeter.save.saveservice.idle_time", "true");
+    }
+
+    /**
+     * 为测试报告和调试报告提供的删除jmx的生成目录方法。
+     * 如果删除的测试报告是测试脚本唯一的测试报告，则将目录也一并删除。
+     */
+    public void deleteJmxDir(String reportPath) {
+        try {
+            String jmxDir = reportPath.substring(0, reportPath.lastIndexOf(File.separator));
+            File jmxDirFile = new File(jmxDir);
+            if (FileUtils.sizeOf(jmxDirFile) == 0L) {
+                FileUtils.forceDelete(jmxDirFile);
+            }
+        } catch (FileNotFoundException | IllegalArgumentException e) {
+            logger.error("要删除的测试报告上级文件夹找不到(删除成功)  " + e.getMessage());
+        } catch (IOException e) {
+            throw new RRException("删除测试报告上级文件夹异常失败", e);
+        }
     }
 }

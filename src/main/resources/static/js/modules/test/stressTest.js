@@ -13,7 +13,7 @@ $(function () {
             { label: '备注', name: 'remark', sortable: false, width: 110 }
         ],
         viewrecords: true,
-        height: 385,
+        height: $(window).height() - 150,
         rowNum: 50,
         rowList: [10, 30, 50, 100, 200],
         rownumbers: true,
@@ -166,7 +166,7 @@ var vm = new Vue({
             vm.title = "上传";
 
             var img = ['jpg','jpeg', 'png','gif', 'bmp']; //图片
-            var txt = ['txt','sql','log'];  //文字
+            var txt = ['txt','sql','log','csv'];  //文字
             var out = ['cfg','dat','hlp','tmp'];  //文字
             var ott = ['xlsx','xls','pdf','docx','doc','pptx',];    //表格，幻灯片，WORD，PDF
             var sin = ['mpg', 'mpeg', 'avi', 'rm', 'rmvb','mov', 'wmv','asf', 'dat', 'mp4']; //视频

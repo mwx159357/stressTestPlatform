@@ -9,6 +9,7 @@ import io.renren.modules.test.utils.StressTestUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -57,21 +58,47 @@ public class StressTestSlaveServiceImpl implements StressTestSlaveService {
     }
 
     /**
-     * 批量切换节点的状态
+     * 重启节点
      */
     @Override
-    public void updateBatchStatus(List<Long> slaveIds, Integer status) {
-        //当前是向所有的分布式节点推送这个，阻塞操作+轮询，并非多线程，因为本地同步网卡会是瓶颈。
-        //使用for循环传统写法
-        //采用了先给同一个节点机传送多个文件的方式，因为数据库的连接消耗优于节点机的链接消耗
+    @Async("asyncServiceExecutor")
+    public void restartSingle(Long slaveId) {
+        StressTestSlaveEntity slave = queryObject(slaveId);
+
+        // 跳过本机节点 和 已经禁用的节点
+        if (!"127.0.0.1".equals(slave.getIp().trim())
+                && !StressTestUtils.DISABLE.equals(slave.getStatus())) {
+            //更新数据库为进行中
+            slave.setStatus(StressTestUtils.PROGRESSING);
+            update(slave);
+
+            try {
+                runOrDownSlave(slave, StressTestUtils.DISABLE);
+                //更新数据库为已经禁用
+                slave.setStatus(StressTestUtils.DISABLE);
+                update(slave);
+
+                runOrDownSlave(slave, StressTestUtils.ENABLE);
+                //更新数据库为已经启用
+                slave.setStatus(StressTestUtils.ENABLE);
+                update(slave);
+
+            } catch (RRException e) {
+                slave.setStatus(StressTestUtils.RUN_ERROR);
+                update(slave);
+                throw e;
+            }
+        }
+    }
+
+    /**
+     * 批量强制切换节点的状态：仅更新数据库字段
+     */
+    @Override
+    public void updateBatchStatusForce(List<Long> slaveIds, Integer status) {
+        //使用for循环传统写法，直接更新数据库。
         for (Long slaveId : slaveIds) {
             StressTestSlaveEntity slave = queryObject(slaveId);
-
-            // 跳过本机节点
-            if (!"127.0.0.1".equals(slave.getIp().trim())) {
-                runOrDownSlave(slave, status);
-            }
-
             //更新数据库
             slave.setStatus(status);
             update(slave);
@@ -79,7 +106,38 @@ public class StressTestSlaveServiceImpl implements StressTestSlaveService {
     }
 
     /**
+     * 批量切换节点的状态：真正去执行Slave节点机启动脚本。
+     */
+    @Override
+    @Async("asyncServiceExecutor")
+    public void updateBatchStatus(Long slaveId, Integer status) {
+        //当前是向所有的分布式节点推送这个，阻塞操作+轮询，并非多线程，因为本地同步网卡会是瓶颈。
+        //采用了先给同一个节点机传送多个文件的方式，因为数据库的连接消耗优于节点机的链接消耗
+        StressTestSlaveEntity slave = queryObject(slaveId);
+
+        // 跳过本机节点
+        if (!"127.0.0.1".equals(slave.getIp().trim())) {
+            //更新数据库为进行中
+            slave.setStatus(StressTestUtils.PROGRESSING);
+            update(slave);
+
+            try {
+                runOrDownSlave(slave, status);
+            } catch (RRException e) {
+                slave.setStatus(StressTestUtils.RUN_ERROR);
+                update(slave);
+                throw e;
+            }
+        }
+
+        //更新数据库
+        slave.setStatus(status);
+        update(slave);
+    }
+
+    /**
      * 启动/停止单节点
+     *
      * @param slave 节点对象
      */
     private void runOrDownSlave(StressTestSlaveEntity slave, Integer status) {
@@ -97,14 +155,14 @@ public class StressTestSlaveServiceImpl implements StressTestSlaveService {
             String jmeterServer = slave.getHomeDir() + "/bin/jmeter-server";
             String md5Str = ssh2Util.runCommand("md5sum " + jmeterServer + " | cut -d ' ' -f1");
             if (!checkMD5(md5Str)) {
-                throw new RRException(slave.getSlaveName() + " 节点路径错误！找不到jmeter-server启动文件！");
+                throw new RRException(slave.getSlaveName() + " 执行遇到问题！找不到jmeter-server启动文件！");
             }
             //首先创建目录，会遇到重复创建
             ssh2Util.runCommand("mkdir " + slave.getHomeDir() + "/bin/stressTestCases");
             //启动节点
             String enableResult = ssh2Util.runCommand(
                     "cd " + slave.getHomeDir() + "/bin/stressTestCases/" + "\n" +
-                    "sh " + "../jmeter-server -Djava.rmi.server.hostname=" + slave.getIp());
+                            "sh " + "../jmeter-server -Djava.rmi.server.hostname=" + slave.getIp());
 
             logger.error(enableResult);
 
@@ -116,7 +174,10 @@ public class StressTestSlaveServiceImpl implements StressTestSlaveService {
         if (StressTestUtils.DISABLE.equals(status)) {
             //禁用远程节点，当前是直接kill掉
             //kill掉就不用判断结果了，不抛异常即OK
-            ssh2Util.runCommand("ps -efww|grep -w 'jmeter-server'|grep -v grep|cut -c 9-15|xargs kill -9");
+            //考虑到网络的操作容易失败，执行2次kill
+            ssh2Util.runCommand("ps -efww|grep -w 'jmeter-server'|grep -v grep|cut -c 9-18|xargs kill -9");
+            stressTestUtils.pause(2000);
+            ssh2Util.runCommand("ps -efww|grep -w 'jmeter-server'|grep -v grep|cut -c 9-18|xargs kill -9");
         }
     }
 
